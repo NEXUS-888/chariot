@@ -1,1 +1,154 @@
-# chariot
+# Global Problems Map
+
+An interactive web application that displays global crises on a world map with filtering, search, and donation capabilities. Built as a weekend prototype using FastAPI, React, and MapLibre.
+
+## Features
+
+- 🗺️ Interactive world map with crisis markers
+- 🔍 Real-time search and category filtering
+- 📋 Crisis details with related charity information
+- 💳 External donation links to Open Collective
+- 📱 Responsive design for mobile and desktop
+
+## Tech Stack
+
+**Backend:**
+- FastAPI (Python)
+- PostgreSQL database
+- Pydantic for data validation
+- psycopg2 for database connections
+
+**Frontend:**
+- React + TypeScript
+- Vite build tool
+- Tailwind CSS for styling
+- MapLibre GL JS for mapping
+- MapTiler for map tiles
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 20+
+- Python 3.11+
+- PostgreSQL 15+
+
+### 1. Database Setup
+
+```bash
+# Start PostgreSQL service
+brew services start postgresql  # macOS
+sudo systemctl start postgresql # Linux
+
+# Create database
+createdb globemap
+
+# Run schema and seed data
+psql -d globemap -f database_schema.sql
+```
+
+### 2. Backend Setup
+
+```bash
+cd backend
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# or .venv\Scripts\activate on Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your PostgreSQL credentials
+
+# Start the server
+uvicorn app.main:app --reload --port 8000
+```
+
+### 3. Frontend Setup
+
+```bash
+cd frontend
+
+# Install dependencies
+npm install
+
+# Set up environment variables
+# Create .env file with your MapTiler API key:
+echo "VITE_MAPTILER_KEY=your_maptiler_key_here" > .env.local
+
+# Start development server
+npm run dev
+```
+
+### 4. Access the Application
+
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:8000
+- API Documentation: http://localhost:8000/docs
+
+## API Endpoints
+
+- `GET /health` - Health check
+- `GET /crises/` - List crises with optional search and filtering
+  - Query parameters: `q` (search), `category` (filter)
+- `GET /charities/` - List charities with optional crisis filtering
+  - Query parameters: `crisis_id` (filter by crisis)
+
+## Optional: Docker Setup
+
+```bash
+# Start PostgreSQL and API with Docker
+docker-compose up -d
+
+# Seed the database
+cd backend && python -m app.etl.seed
+```
+
+## Development
+
+### Database Seeding
+
+```bash
+# Run seed data script
+cd backend
+python -m app.etl.seed
+
+# Optional: Pull data from ReliefWeb API
+python -m app.etl.reliefweb_pull
+```
+
+### Map Configuration
+
+The application requires a MapTiler API key for map tiles:
+
+1. Sign up at [MapTiler](https://www.maptiler.com/)
+2. Get your API key
+3. Add it to `frontend/.env.local`: `VITE_MAPTILER_KEY=your_key_here`
+
+## Project Structure
+
+```
+chariot/
+├── backend/                 # FastAPI application
+│   ├── app/
+│   │   ├── main.py         # FastAPI app entry point
+│   │   ├── db.py           # Database connection
+│   │   ├── models.py       # Data models
+│   │   ├── schemas.py      # Pydantic schemas
+│   │   ├── routers/        # API route handlers
+│   │   └── etl/           # Data import scripts
+├── frontend/               # React application
+│   ├── src/
+│   │   ├── components/    # React components
+│   │   └── lib/          # Utility functions
+├── database_schema.sql    # Database schema
+└── docker-compose.yml     # Docker configuration
+```
+
+## License
+
+MIT License - see LICENSE file for details.
