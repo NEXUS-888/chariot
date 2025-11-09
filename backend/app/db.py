@@ -11,3 +11,5 @@ conn = psycopg2.connect(
     host=os.getenv('PGHOST', 'localhost'),
     port=os.getenv('PGPORT', '5432'),
 )
+# Avoid “current transaction is aborted” after any prior error
+conn.autocommit = True
