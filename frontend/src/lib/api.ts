@@ -51,9 +51,22 @@ export type Charity = {
   verified: boolean
 }
 
-export async function fetchCharities(params: { crisis_id?: number }) {
+export async function fetchCharities(params: { crisis_id?: number }): Promise<Charity[]> {
   const usp = new URLSearchParams()
   if (params.crisis_id != null) usp.set('crisis_id', String(params.crisis_id))
   const res = await fetch(`${API}/charities/?${usp.toString()}`)
-  return json<Charity[]>(res)
+  console.log('📡 Response status:', res.status, res.statusText)
+
+  if (!res.ok) {
+    const errorText = await res.text()
+    console.error('❌ API Error response:', errorText)
+    throw new Error(`Failed to fetch charities: ${res.status} ${errorText}`)
+  }
+
+  const data = await res.json()
+  console.log('📦 Raw charities data received:', data)
+  console.log('📦 Type of data:', Array.isArray(data) ? 'Array' : typeof data)
+  console.log('📦 Number of items:', Array.isArray(data) ? data.length : 'N/A')
+
+  return data
 }

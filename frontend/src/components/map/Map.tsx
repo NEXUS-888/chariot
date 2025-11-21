@@ -14,6 +14,14 @@ type Item = {
   source_api?: string;
 };
 
+const categoryColors: Record<string, string> = {
+  disaster: "#ef4444",
+  climate: "#22c55e",
+  health: "#06b6d4",
+  hunger: "#f59e0b",
+  conflict: "#a855f7",
+};
+
 export default function Map({
   items,
   onSelect,
@@ -25,23 +33,12 @@ export default function Map({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
+  const itemsRef = useRef(items);
 
-  // Category → color
+  // Category → color (case-insensitive)
   const catColor = (c?: string) => {
-    switch (c) {
-      case "Disaster":
-        return "#ef4444"; // red-500
-      case "Climate":
-        return "#22c55e"; // green-500
-      case "Health":
-        return "#06b6d4"; // cyan-500
-      case "Hunger":
-        return "#f59e0b"; // amber-500
-      case "Conflict":
-        return "#a855f7"; // violet-500
-      default:
-        return "#3b82f6"; // blue-500
-    }
+    const normalized = c?.toLowerCase() || "";
+    return categoryColors[normalized] || "#64748b"; // default gray
   };
 
   // Convert items → GeoJSON
@@ -70,7 +67,8 @@ export default function Map({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: `https://api.maptiler.com/maps/streets/style.json?key=${
+      // Options: 'streets-v2', 'satellite', 'hybrid', 'topo-v2', 'voyager', 'toner', 'basic-v2'
+      style: `https://api.maptiler.com/maps/voyager/style.json?key=${
         import.meta.env.VITE_MAPTILER_KEY
       }`,
       center: [10, 20] as LngLatLike,
@@ -149,10 +147,14 @@ export default function Map({
       // Click cluster → zoom in
       map.on("click", "clusters", (e) => {
         const features = map.queryRenderedFeatures(e.point, { layers: ["clusters"] });
+        if (!features.length) return;
         const clusterId = features[0].properties?.cluster_id;
         const source = map.getSource("crises") as maplibregl.GeoJSONSource;
         source.getClusterExpansionZoom(clusterId, (err, zoom) => {
-          if (err) return;
+          if (err) {
+            console.error("Failed to get cluster expansion zoom:", err);
+            return;
+          }
           map.easeTo({
             center: (features[0].geometry as any).coordinates as LngLatLike,
             zoom,
@@ -160,13 +162,20 @@ export default function Map({
         });
       });
 
-      // Click point → select + fly
+      // Click point → select without auto-zoom (to prevent conflicts)
       map.on("click", "points", (e) => {
         const f = e.features?.[0] as MapGeoJSONFeature | undefined;
         if (!f) return;
         const props = f.properties as any;
         const coords = (f.geometry as any).coordinates as [number, number];
-        map.easeTo({ center: coords, zoom: Math.max(map.getZoom(), 4) });
+        
+        // Only center the map gently without aggressive zooming
+        const currentZoom = map.getZoom();
+        if (currentZoom < 4) {
+          map.easeTo({ center: coords, zoom: 4, duration: 500 });
+        } else {
+          map.panTo(coords, { duration: 500 });
+        }
 
         // Reconstruct your Item shape for the side panel
         onSelect({
@@ -190,16 +199,46 @@ export default function Map({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    
+    // Wait for map to be fully loaded
+    if (!map.isStyleLoaded()) {
+      const handler = () => {
+        const src = map.getSource("crises") as maplibregl.GeoJSONSource | undefined;
+        if (src) {
+          const geoData = toGeoJSON();
+          console.log("Updating map data (on load):", geoData.features.length, "items");
+          src.setData(geoData as any);
+        }
+      };
+      map.once("load", handler);
+      return () => {
+        map.off("load", handler);
+      };
+    }
+    
     const src = map.getSource("crises") as maplibregl.GeoJSONSource | undefined;
-    if (src) src.setData(toGeoJSON() as any);
+    if (src) {
+      const geoData = toGeoJSON();
+      console.log("Updating map data:", geoData.features.length, "items", items.length > 0 ? `(first: ${items[0].category})` : "");
+      src.setData(geoData as any);
+      itemsRef.current = items;
+      
+      // Only auto-zoom when filtering changes, not on every update
+      const previousItems = itemsRef.current;
+      const itemsChanged = items.length !== previousItems.length;
+      
+      if (itemsChanged && items.length > 0 && items.length < 20) {
+        const bounds = new maplibregl.LngLatBounds();
+        items.forEach(item => {
+          bounds.extend([item.longitude, item.latitude]);
+        });
+        if (!bounds.isEmpty()) {
+          map.fitBounds(bounds, { padding: 100, maxZoom: 6, duration: 800 });
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items]);
-
-  // Keep a subtle visual focus on selected (optional)
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !selected) return;
-    map.easeTo({ center: [selected.longitude, selected.latitude], zoom: Math.max(map.getZoom(), 4) });
-  }, [selected]);
 
   return (
     <div className="relative h-full w-full">

@@ -7,8 +7,9 @@ An interactive web application that displays global crises on a world map with f
 - 🗺️ Interactive world map with crisis markers
 - 🔍 Real-time search and category filtering
 - 📋 Crisis details with related charity information
-- 💳 External donation links to Open Collective
-- 📱 Responsive design for mobile and desktop
+- 💳 Direct donation integration with OpenCollective
+- � Google OAuth authentication
+- �📱 Responsive design with glassmorphism UI
 
 ## Tech Stack
 
@@ -121,6 +122,35 @@ python -m app.etl.seed
 python -m app.etl.reliefweb_pull
 ```
 
+**Note:** If you see "No charities found" when clicking on crises, you need to populate the charities table. You can either:
+
+1. **Manually add charities via SQL:**
+```sql
+-- Example: Add a charity for crisis_id 18
+INSERT INTO charities (name, description, donation_url, crisis_id) 
+VALUES (
+  'Red Cross',
+  'International humanitarian organization',
+  'https://opencollective.com/redcross',
+  18
+);
+```
+
+2. **Check your database:**
+```bash
+# Connect to your database
+psql -d globemap
+
+# Check if charities exist
+SELECT * FROM charities;
+
+# Check crisis-charity relationships
+SELECT c.id, c.title, ch.name, ch.donation_url 
+FROM crises c 
+LEFT JOIN charities ch ON ch.crisis_id = c.id 
+LIMIT 10;
+```
+
 ### Map Configuration
 
 The application requires a MapTiler API key for map tiles:
@@ -128,6 +158,23 @@ The application requires a MapTiler API key for map tiles:
 1. Sign up at [MapTiler](https://www.maptiler.com/)
 2. Get your API key
 3. Add it to `frontend/.env.local`: `VITE_MAPTILER_KEY=your_key_here`
+
+### Google OAuth Setup
+
+For authentication:
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create OAuth 2.0 Client ID
+3. Add authorized origins: `http://localhost:5173`
+4. Add to `frontend/.env.local`: `VITE_GOOGLE_CLIENT_ID=your_client_id`
+
+### OpenCollective Integration
+
+Donations are routed through OpenCollective:
+
+- Charities in the database should have `donation_url` pointing to their OpenCollective page
+- Format: `https://opencollective.com/[collective-slug]`
+- The app displays the "Donate Now" button when charities are available for a crisis
 
 ## Project Structure
 
