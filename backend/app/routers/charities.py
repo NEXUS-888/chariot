@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Query
 from typing import List
 from psycopg2.extras import RealDictCursor
-from ..db import conn
+from ..db import engine
 from ..schemas import CharityOut
 
 router = APIRouter(prefix="/charities", tags=["charities"])
@@ -18,7 +18,15 @@ def list_charities(crisis_id: int | None = Query(default=None)):
         sql += " WHERE related_crisis_id = %s"
         params.append(crisis_id)
 
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(sql, params)
-        rows = cur.fetchall()
-    return rows
+    raw_conn = engine.raw_connection()
+    try:
+        with raw_conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        raw_conn.commit()
+        return rows
+    except Exception:
+        raw_conn.rollback()
+        raise
+    finally:
+        raw_conn.close()

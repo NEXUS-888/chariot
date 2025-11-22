@@ -113,14 +113,27 @@ cd backend && python -m app.etl.seed
 
 ### Database Seeding
 
-```bash
-# Run seed data script
-cd backend
-python -m app.etl.seed
+The backend is now the **Single Source of Truth**. It fetches data from multiple external APIs and normalizes it.
 
-# Optional: Pull data from ReliefWeb API
-python -m app.etl.reliefweb_pull
+```bash
+# Install new dependencies
+cd backend
+pip install -r requirements.txt
+
+# Set up API keys (optional - some APIs work without keys)
+cp .env.example .env
+# Edit .env and add your API keys:
+# - EVERYORG_API_KEY (optional)
+# - GLOBALGIVING_API_KEY (optional)
+
+# Run the smart ETL seed script
+python -m app.etl.seed
 ```
+
+**Data Sources:**
+- **Crises**: ReliefWeb API, USGS Earthquakes
+- **Charities**: Every.org, OpenCollective
+- All data is normalized and linked by country code
 
 **Note:** If you see "No charities found" when clicking on crises, you need to populate the charities table. You can either:
 

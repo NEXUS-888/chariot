@@ -1,85 +1,236 @@
-import os
-import psycopg2
-from dotenv import load_dotenv
+"""
+Smart ETL Seed Script
+Fetches data from multiple external APIs and seeds the database
+"""
+import asyncio
+import logging
+from sqlalchemy.orm import Session
+from typing import List, Dict, Set
 
-load_dotenv()
+from app.db import SessionLocal, engine
+from app.models import Base, Crisis, Charity
+from app.integrations.reliefweb_client import fetch_reliefweb_crises
+from app.integrations.usgs_client import fetch_usgs_earthquakes
+from app.integrations.everyorg_client import fetch_everyorg_charities
+from app.integrations.opencollective_client import fetch_opencollective_charities
 
-conn = psycopg2.connect(
-    dbname=os.getenv("PGDATABASE", "globemap"),
-    user=os.getenv("PGUSER", "postgres"),
-    password=os.getenv("PGPASSWORD", "Vishal@2005"),  # <- your password
-    host=os.getenv("PGHOST", "localhost"),
-    port=os.getenv("PGPORT", "5432"),
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
 
-# NOTE:
-# Table schema is (latitude, longitude) — but MapLibre needs [longitude, latitude] when plotting.
-# We will store as (lat, lon) in DB and the frontend uses setLngLat([it.longitude, it.latitude]) — correct.
 
-CRISES = [
-    # title, category, description, severity, latitude, longitude, source_api
-    ("Flood Response NYC",        "Disaster", "Urban flooding affecting boroughs.",                      4,  40.7128,  -74.0060,  "seed"),
-    ("Heatwave London",           "Health",   "High temperatures impacting vulnerable groups.",          3,  51.5074,   -0.1278,  "seed"),
-    ("Earthquake Tokyo",          "Disaster", "Strong quake recorded; infrastructure checks ongoing.",   5,  35.6762,  139.6503,  "seed"),
-    ("Bushfire Sydney",           "Disaster", "Large-scale bushfires near suburbs.",                     5, -33.8688,  151.2093,  "seed"),
-    ("Drought Nairobi",           "Climate",  "Prolonged drought affecting water supply.",              4,  -1.2864,   36.8172,  "seed"),
-    ("Food Insecurity São Paulo","Hunger",   "Supply chain disruption driving shortages.",              3, -23.5505,  -46.6333,  "seed"),
-    ("Health Crisis Cairo",      "Health",   "Hospital capacity under stress.",                         3,  30.0444,   31.2357,  "seed"),
-    ("Monsoon Impact Mumbai",    "Disaster", "Monsoon flooding in low-lying areas.",                    4,  19.0760,   72.8777,  "seed"),
-    ("Landslide Vancouver",      "Disaster", "Heavy rains triggering slope failures.",                  4,  49.2827, -123.1207,  "seed"),
-    ("Power Outage Johannesburg","Conflict", "Grid instability causing rolling blackouts.",              2, -26.2041,   28.0473,  "seed"),
-]
+async def fetch_all_crises() -> List[Dict]:
+    """
+    Fetch crises from all external APIs concurrently
+    
+    Returns:
+        Combined list of normalized crisis dictionaries
+    """
+    logger.info("=" * 80)
+    logger.info("🌍 FETCHING CRISES FROM ALL SOURCES")
+    logger.info("=" * 80)
+    
+    # Run all crisis clients concurrently
+    results = await asyncio.gather(
+        fetch_reliefweb_crises(limit=30),
+        fetch_usgs_earthquakes(min_magnitude=4.5, days_back=30),
+        return_exceptions=True  # Don't let one failure stop all
+    )
+    
+    all_crises = []
+    
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.error(f"❌ Crisis source {i} failed: {result}")
+        else:
+            all_crises.extend(result)
+    
+    logger.info(f"✅ Total crises fetched: {len(all_crises)}")
+    return all_crises
 
-CHARITIES = [
-    # (name, description, website) — we'll link each to a crisis after inserts
-    ("Relief Alliance",     "Rapid response & shelter kits.",           "https://example.org/relief"),
-    ("Food For All",        "Emergency food distribution.",              "https://example.org/food"),
-    ("Health Access Fund",  "Mobile clinics & meds.",                    "https://example.org/health"),
-]
 
-def reset_and_seed():
-    with conn:
-        with conn.cursor() as cur:
-            # 1) wipe existing data and reset ids
-            cur.execute("TRUNCATE TABLE charities, crises RESTART IDENTITY CASCADE;")
+async def fetch_charities_by_countries(country_codes: Set[str]) -> List[Dict]:
+    """
+    Fetch charities for specific countries + global charities
+    
+    Args:
+        country_codes: Set of ISO 2-letter country codes
+        
+    Returns:
+        List of normalized charity dictionaries
+    """
+    logger.info("=" * 80)
+    logger.info("💖 FETCHING CHARITIES")
+    logger.info("=" * 80)
+    
+    all_charities = []
+    
+    # 1. Fetch global charities from OpenCollective
+    logger.info("Fetching global charities from OpenCollective...")
+    opencollective_charities = await fetch_opencollective_charities(
+        keywords=["disaster relief", "humanitarian", "crisis response"],
+        limit=10
+    )
+    all_charities.extend(opencollective_charities)
+    
+    # 2. Fetch country-specific charities from Every.org
+    logger.info(f"Fetching country-specific charities for {len(country_codes)} countries...")
+    
+    # Limit to avoid rate limiting
+    limited_countries = list(country_codes)[:10]
+    
+    tasks = []
+    for country_code in limited_countries:
+        if country_code:  # Skip None values
+            tasks.append(fetch_everyorg_charities(country_code, limit=5))
+            # Small delay between requests
+            await asyncio.sleep(0.3)
+    
+    if tasks:
+        country_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for result in country_results:
+            if isinstance(result, Exception):
+                logger.error(f"❌ Failed to fetch charities: {result}")
+            else:
+                all_charities.extend(result)
+    
+    logger.info(f"✅ Total charities fetched: {len(all_charities)}")
+    return all_charities
 
-            # 2) insert crises and collect their ids
-            crisis_ids = []
-            for c in CRISES:
-                cur.execute(
-                    """
-                    INSERT INTO crises
-                    (title, category, description, severity, latitude, longitude, source_api)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s)
-                    RETURNING id;
-                    """,
-                    c,
-                )
-                crisis_ids.append(cur.fetchone()[0])
 
-            # 3) attach a couple of charities to each crisis (round-robin)
-            for i, crisis_id in enumerate(crisis_ids):
-                name, desc, site = CHARITIES[i % len(CHARITIES)]
-                cur.execute(
-                    """
-                    INSERT INTO charities
-                    (name, description, website, logo_url, related_crisis_id, verified)
-                    VALUES (%s,%s,%s,NULL,%s,TRUE)
-                    """,
-                    (name, desc, site, crisis_id),
-                )
-                # add a second one for richer UI
-                name2, desc2, site2 = CHARITIES[(i + 1) % len(CHARITIES)]
-                cur.execute(
-                    """
-                    INSERT INTO charities
-                    (name, description, website, logo_url, related_crisis_id, verified)
-                    VALUES (%s,%s,%s,NULL,%s,TRUE)
-                    """,
-                    (name2, desc2, site2, crisis_id),
-                )
+def seed_database(crises_data: List[Dict], charities_data: List[Dict]):
+    """
+    Seed the database with crises and charities
+    
+    Args:
+        crises_data: List of crisis dictionaries
+        charities_data: List of charity dictionaries
+    """
+    logger.info("=" * 80)
+    logger.info("💾 SEEDING DATABASE")
+    logger.info("=" * 80)
+    
+    db: Session = SessionLocal()
+    
+    try:
+        # Create tables if they don't exist
+        Base.metadata.create_all(bind=engine)
+        logger.info("✅ Database tables created/verified")
+        
+        # Optional: Clear existing data (comment out to keep existing data)
+        logger.info("🗑️  Clearing existing data...")
+        db.query(Charity).delete()
+        db.query(Crisis).delete()
+        db.commit()
+        logger.info("✅ Existing data cleared")
+        
+        # Insert crises
+        logger.info(f"📍 Inserting {len(crises_data)} crises...")
+        crisis_map = {}  # Map source_id to Crisis object
+        
+        for crisis_dict in crises_data:
+            # Check for duplicates by source_id
+            source_id = crisis_dict.get("source_id")
+            
+            if source_id and db.query(Crisis).filter(Crisis.source_id == source_id).first():
+                logger.debug(f"Skipping duplicate crisis: {source_id}")
+                continue
+            
+            crisis = Crisis(**crisis_dict)
+            db.add(crisis)
+            db.flush()  # Get the ID without committing
+            
+            if source_id:
+                crisis_map[source_id] = crisis
+        
+        db.commit()
+        logger.info(f"✅ Inserted {len(crisis_map)} unique crises")
+        
+        # Get all country codes from inserted crises
+        country_codes = set()
+        for crisis in db.query(Crisis).all():
+            if crisis.country_code:
+                country_codes.add(crisis.country_code)
+        
+        logger.info(f"📍 Found {len(country_codes)} unique countries: {country_codes}")
+        
+        # Insert charities and link to crises
+        logger.info(f"💖 Inserting {len(charities_data)} charities...")
+        charity_count = 0
+        
+        for charity_dict in charities_data:
+            country_code = charity_dict.get("country_code")
+            
+            # Try to link charity to a crisis in the same country
+            related_crisis = None
+            if country_code:
+                related_crisis = db.query(Crisis).filter(
+                    Crisis.country_code == country_code
+                ).first()
+            
+            charity = Charity(
+                **charity_dict,
+                related_crisis_id=related_crisis.id if related_crisis else None,
+                crisis_id=related_crisis.id if related_crisis else None,  # Legacy field
+            )
+            db.add(charity)
+            charity_count += 1
+        
+        db.commit()
+        logger.info(f"✅ Inserted {charity_count} charities")
+        
+        # Summary
+        logger.info("=" * 80)
+        logger.info("📊 SEED SUMMARY")
+        logger.info("=" * 80)
+        total_crises = db.query(Crisis).count()
+        total_charities = db.query(Charity).count()
+        linked_charities = db.query(Charity).filter(Charity.related_crisis_id.isnot(None)).count()
+        
+        logger.info(f"✅ Total Crises: {total_crises}")
+        logger.info(f"✅ Total Charities: {total_charities}")
+        logger.info(f"✅ Linked Charities: {linked_charities}")
+        logger.info(f"✅ Global Charities: {total_charities - linked_charities}")
+        logger.info("=" * 80)
+        
+    except Exception as e:
+        logger.error(f"❌ Database error: {e}")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+async def main():
+    """
+    Main async entry point
+    """
+    logger.info("🚀 STARTING SMART ETL SEED PROCESS")
+    
+    try:
+        # Step 1: Fetch all crises
+        crises_data = await fetch_all_crises()
+        
+        # Step 2: Extract unique country codes
+        country_codes = {c.get("country_code") for c in crises_data if c.get("country_code")}
+        logger.info(f"📍 Unique countries in crises: {country_codes}")
+        
+        # Step 3: Fetch charities for those countries
+        charities_data = await fetch_charities_by_countries(country_codes)
+        
+        # Step 4: Seed the database
+        seed_database(crises_data, charities_data)
+        
+        logger.info("✅ SEED PROCESS COMPLETED SUCCESSFULLY!")
+        
+    except Exception as e:
+        logger.error(f"❌ Seed process failed: {e}")
+        raise
+
 
 if __name__ == "__main__":
-    reset_and_seed()
-    print("✅ Reset complete and seeded 10 widely spaced on-land locations.")
-    conn.close()
+    asyncio.run(main())

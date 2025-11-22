@@ -1,15 +1,38 @@
+"""
+Database connection and session management
+"""
 import os
-import psycopg2
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
 
-conn = psycopg2.connect(
-    dbname=os.getenv('PGDATABASE', 'globemap'),
-    user=os.getenv('PGUSER', 'postgres'),
-    password=os.getenv('PGPASSWORD', ''),
-    host=os.getenv('PGHOST', 'localhost'),
-    port=os.getenv('PGPORT', '5432'),
+# Database URL from environment variable
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/globemap")
+
+# Create engine
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,  # Verify connections before using them
+    echo=False,  # Set to True for SQL query logging
 )
-# Avoid “current transaction is aborted” after any prior error
-conn.autocommit = True
+
+# Create SessionLocal class
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Backward compatibility alias
+conn = engine
+
+
+def get_db():
+    """
+    Dependency function to get database session
+    Use with FastAPI Depends()
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

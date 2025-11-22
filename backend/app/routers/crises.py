@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 from psycopg2.extras import RealDictCursor
-from ..db import conn
+from ..db import engine
 from ..schemas import CrisisOut, PaginatedCrises
 
 router = APIRouter(prefix="/crises", tags=["crises"])
@@ -33,9 +33,10 @@ def list_crises(
 
     where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
-    # Always rollback if the connection is in an error state (extra safety)
+    # Get raw psycopg2 connection from SQLAlchemy engine
+    raw_conn = engine.raw_connection()
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with raw_conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(f"SELECT COUNT(*) AS count FROM crises {where_sql}", params)
             total = int(cur.fetchone()["count"])
 
@@ -49,10 +50,13 @@ def list_crises(
             """, params + [limit, offset])
 
             items = cur.fetchall()
+        raw_conn.commit()
     except Exception:
-        # Reset failed transaction and bubble up a clean 500 with FastAPI’s handler
-        conn.rollback()
+        # Reset failed transaction and bubble up a clean 500 with FastAPI's handler
+        raw_conn.rollback()
         raise
+    finally:
+        raw_conn.close()
 
     # `items` are already dicts compatible with CrisisOut; FastAPI will coerce them
-    return {"total": total, "items": items}
+    return {"total": total, "items": items, "limit": limit, "offset": offset}
